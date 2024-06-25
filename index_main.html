@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Carpet Area Measuring App</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+        }
+        #app-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+        canvas {
+            border: 2px solid #333;
+            cursor: crosshair;
+        }
+        .input-container {
+            margin-bottom: 10px;
+        }
+        .input-container label {
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .button {
+            padding: 8px 20px;
+            margin-right: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            background-color: #007bff;
+            color: #fff;
+            transition: background-color 0.3s ease;
+        }
+        .button:hover {
+            background-color: #0056b3;
+        }
+        #area-info {
+            margin-top: 10px;
+            font-weight: bold;
+        }
+        #individual-areas {
+            margin-top: 10px;
+        }
+        #individual-areas div {
+            margin-bottom: 5px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app-container">
+        <canvas id="drawingCanvas" width="500" height="500"></canvas>
+        <div id="controls-container">
+            <div class="input-container">
+                <label for="sideLength">Side Length (feet):</label>
+                <input type="number" id="sideLength" placeholder="Enter side length">
+                <button id="adjustSide" class="button">Adjust Side</button>
+            </div>
+            <div>
+                <button id="completePolygon" class="button">Complete Polygon</button>
+                <button id="editPolygon" class="button">Edit Polygon</button>
+                <button id="clearPolygon" class="button">Clear Polygon</button>
+                <button onclick="exportToPNG()" class="button">Export to PNG</button>
+                <button onclick="exportToPDF()" class="button">Export to PDF</button>
+                <button id="expectedArea" class="button">Expected Area</button>
+                <button id="undoSide" class="button">Undo Last Side</button>
+
+            </div>
+        </div>
+        <div id="area-info"></div>
+        <div id="individual-areas"></div>
+        <div id="remaining-area-info"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.3.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/js-polygon/1.1.1/jspolygon.min.js"></script>
+
+    <script>
+        const canvas = document.getElementById('drawingCanvas');
+        const ctx = canvas.getContext('2d');
+        const sideLengthInput = document.getElementById('sideLength');
+        const adjustSideButton = document.getElementById('adjustSide');
+        const completePolygonButton = document.getElementById('completePolygon');
+        const areaElement = document.getElementById('area-info');
+        const individualAreasElement = document.getElementById('individual-areas');
+        const editPolygonButton = document.getElementById('editPolygon');
+        const clearPolygonButton = document.getElementById('clearPolygon');
+        const expectedAreaButton = document.getElementById('expectedArea');
+        const remainingAreaElement = document.getElementById('remaining-area-info');
+        const undoSideButton = document.getElementById('undoSide');
+
+        const maxFeet = 100;
+        const canvasSize = canvas.width;
+        const pixelsPerFoot = canvasSize / maxFeet;
+        const gridSize = 16;
+
+        let polygons = [];
+        let currentPolygon = [];
+        let expectedPolygons = [];
+        let drawingExpectedPolygon = false;
+        let currentSide = null;
+
+        canvas.addEventListener('click', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = (e.clientX - rect.left);
+            const y = (e.clientY - rect.top);
+            const snappedPoint = snapToGrid({ x, y });
+
+            if (drawingExpectedPolygon) {
+                addPointToPolygon(expectedPolygons[expectedPolygons.length - 1], snappedPoint);
+            } else {
+                addPointToPolygon(currentPolygon, snappedPoint);
+            }
+        });
+        undoSideButton.addEventListener('click', () => {
+    if (drawingExpectedPolygon) {
+        const expectedPolygon = expectedPolygons[expectedPolygons.length - 1];
+        if (expectedPolygon.length > 0) {
+            expectedPolygon.pop(); // Remove the last point
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawGrid();
+            drawPolygons(polygons);
+            drawPolygons(expectedPolygons, true);
+            drawPolygon(expectedPolygon);
+            drawLegend();
+        }
+    } else {
+        if (currentPolygon.length > 0) {
+            currentPolygon.pop(); // Remove the last point
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawGrid();
+            drawPolygons(polygons);
+            drawPolygons(expectedPolygons, true);
+            drawPolygon(currentPolygon);
+            drawLegend();
+        }
+    }
+});
+
+        function addPointToPolygon(polygon, point) {
+            if (polygon.length === 0) {
+                polygon.push(point);
+            } else {
+                ctx.beginPath();
+                ctx.moveTo(polygon[polygon.length - 1].x, polygon[polygon.length - 1].y);
+                ctx.lineTo(point.x, point.y);
+                ctx.strokeStyle = drawingExpectedPolygon ? '#00ff00' : '#ff0000';
+                ctx.stroke();
+                polygon.push(point);
+
+                if (currentSide !== null) {
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    drawGrid();
+                    drawPolygons(polygons);
+                    drawPolygons(expectedPolygons, true);
+                    drawPolygon(drawingExpectedPolygon ? expectedPolygons[expectedPolygons.length - 1] : currentPolygon);
+                    drawGuidelines(snapToGrid(currentSide), point);
+                    drawLegend();
+                }
+            }
+        }
+
+        adjustSideButton.addEventListener('click', () => {
+            const length = sideLengthInput.value;
+
+            if (!length || isNaN(length)) return;
+
+            const feet = parseFloat(length);
+            const sideLength = feet * pixelsPerFoot;
+
+            let polygon = drawingExpectedPolygon ? expectedPolygons[expectedPolygons.length - 1] : currentPolygon;
+
+            if (polygon.length < 2) return;
+
+            const lastPoint = polygon[polygon.length - 2];
+            const currentPoint = polygon[polygon.length - 1];
+            const distance = Math.sqrt(Math.pow(currentPoint.x - lastPoint.x, 2) + Math.pow(currentPoint.y - lastPoint.y, 2));
+            const ratio = sideLength / distance;
+
+            const adjustedX = lastPoint.x + (currentPoint.x - lastPoint.x) * ratio;
+            const adjustedY = lastPoint.y + (currentPoint.y - lastPoint.y) * ratio;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawGrid();
+            drawPolygons(polygons);
+            drawPolygons(expectedPolygons, true);
+            drawPolygon(polygon);
+
+            ctx.beginPath();
+            ctx.moveTo(lastPoint.x, lastPoint.y);
+            ctx.lineTo(adjustedX, adjustedY);
+            ctx.strokeStyle = drawingExpectedPolygon ? '#00ff00' : '#ff0000';
+            ctx.stroke();
+
+            polygon[polygon.length - 1] = { x: adjustedX, y: adjustedY };
+            ctx.beginPath();
+            ctx.arc(adjustedX, adjustedY, 3, 0, 2 * Math.PI);
+            ctx.fill();
+
+            sideLengthInput.value = '';
+        });
+
+        completePolygonButton.addEventListener('click', () => {
+            if (drawingExpectedPolygon) {
+                if (expectedPolygons[expectedPolygons.length - 1].length > 2) {
+                    const expectedArea = calculatePolygonArea(expectedPolygons[expectedPolygons.length - 1]);
+                    const totalArea = calculatePolygonArea(polygons.flatMap(p => p.points));
+                    const remainingArea = totalArea - calculateTotalExpectedArea();
+
+                    drawPolygon(expectedPolygons[expectedPolygons.length - 1]);
+                    drawAreaLabel(expectedPolygons[expectedPolygons.length - 1], expectedArea.toFixed(2), true);
+
+                    expectedPolygons.push([]);
+                    drawAreaInfo();
+                    drawLegend();
+                }
+                drawingExpectedPolygon = false;
+            } else {
+                if (currentPolygon.length > 2) {
+                    polygons.push({ points: currentPolygon, expectedAreas: [] });
+                    const area = calculatePolygonArea(currentPolygon);
+
+                    drawPolygon(currentPolygon);
+                    drawSideLengths(currentPolygon);
+                    drawAreaLabel(currentPolygon, area.toFixed(2));
+                    currentPolygon = [];
+                    drawAreaInfo();
+                    drawLegend();
+                }
+            }
+        });
+
+        clearPolygonButton.addEventListener('click', () => {
+            currentPolygon = [];
+            polygons = [];
+            expectedPolygons = [[]];
+            drawingExpectedPolygon = false;
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            drawGrid();
+            areaElement.textContent = '';
+            individualAreasElement.innerHTML = '';
+            remainingAreaElement.textContent = '';
+        });
+
+        editPolygonButton.addEventListener('click', () => {
+            const lastPolygon = polygons.pop();
+            if (lastPolygon) {
+                currentPolygon = lastPolygon.points;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                drawGrid();
+                drawPolygons(polygons);
+                drawPolygon(currentPolygon);
+                updateAreaInfo();
+                drawLegend();
+            }
+        });
+
+        expectedAreaButton.addEventListener('click', () => {
+            if (currentPolygon.length === 0) return;
+            drawingExpectedPolygon = true;
+            expectedPolygons.push([]);
+        });
+
+        function drawGrid() {
+            ctx.strokeStyle = '#ddd';
+            for (let x = 0; x < canvas.width; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            for (let y = 0; y < canvas.height; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+        }
+
+        function drawPolygon(polygon) {
+            ctx.strokeStyle = drawingExpectedPolygon ? '#00ff00' : '#ff0000';
+            ctx.beginPath();
+            ctx.moveTo(polygon[0].x, polygon[0].y);
+            for (let i = 1; i < polygon.length; i++) {
+                ctx.lineTo(polygon[i].x, polygon[i].y);
+            }
+            ctx.closePath();
+            ctx.stroke();
+        }
+
+        function drawSideLengths(polygon) {
+            ctx.fillStyle = '#000';
+            ctx.font = '12px Arial';
+
+            for (let i = 0; i < polygon.length; i++) {
+                const nextIndex = (i + 1) % polygon.length;
+                const dx = polygon[nextIndex].x - polygon[i].x;
+                const dy = polygon[nextIndex].y - polygon[i].y;
+                const distance = Math.sqrt(dx * dx + dy * dy);
+                const lengthInFeet = distance / pixelsPerFoot;
+
+                const midX = (polygon[i].x + polygon[nextIndex].x) / 2;
+                const midY = (polygon[i].y + polygon[nextIndex].y) / 2;
+                ctx.fillText(lengthInFeet.toFixed(2) + ' ft', midX, midY);
+            }
+        }
+
+        function snapToGrid(point) {
+            const snappedX = Math.round(point.x / gridSize) * gridSize;
+            const snappedY = Math.round(point.y / gridSize) * gridSize;
+            return { x: snappedX, y: snappedY };
+        }
+
+        function calculatePolygonArea(polygon) {
+            let area = 0;
+            for (let i = 0; i < polygon.length; i++) {
+                const nextIndex = (i + 1) % polygon.length;
+                area += polygon[i].x * polygon[nextIndex].y;
+                area -= polygon[nextIndex].x * polygon[i].y;
+            }
+            area /= 2;
+            return Math.abs(area) / (pixelsPerFoot * pixelsPerFoot);
+        }
+
+        function calculateTotalExpectedArea() {
+            return expectedPolygons.reduce((total, polygon) => {
+                if (polygon.length > 2) {
+                    total += calculatePolygonArea(polygon);
+                }
+                return total;
+            }, 0);
+        }
+
+        function drawAreaLabel(polygon, area, isExpected = false) {
+            ctx.fillStyle = isExpected ? '#00ff00' : '#ff0000';
+            ctx.font = '16px Arial';
+            const centerX = polygon.reduce((sum, point) => sum + point.x, 0) / polygon.length;
+            const centerY = polygon.reduce((sum, point) => sum + point.y, 0) / polygon.length;
+            ctx.fillText(area + ' sq ft', centerX, centerY);
+        }
+
+        function drawPolygons(polygons, isExpected = false) {
+            polygons.forEach(polygon => {
+                drawPolygon(polygon);
+                if (!isExpected) {
+                    drawSideLengths(polygon);
+                    const area = calculatePolygonArea(polygon);
+                    drawAreaLabel(polygon, area.toFixed(2));
+                } else {
+                    drawAreaLabel(polygon, calculatePolygonArea(polygon).toFixed(2), true);
+                }
+            });
+        }
+
+        function drawAreaInfo() {
+            const totalArea = calculatePolygonArea(polygons.flatMap(p => p.points));
+            const totalExpectedArea = calculateTotalExpectedArea();
+            const remainingArea = totalArea - totalExpectedArea;
+
+            areaElement.textContent = `Total Area: ${totalArea.toFixed(2)} sq ft`;
+            individualAreasElement.innerHTML = polygons.map((polygon, index) => {
+                const area = calculatePolygonArea(polygon.points);
+                return `<div>Polygon ${index + 1} Area: ${area.toFixed(2)} sq ft</div>`;
+            }).join('');
+
+            remainingAreaElement.textContent = `Remaining Area: ${remainingArea.toFixed(2)} sq ft`;
+        }
+
+        function drawLegend() {
+            const legendX = 20;
+            const legendY = canvas.height - 20;
+
+            ctx.fillStyle = '#000';
+            ctx.font = '12px Arial';
+            ctx.fillText('Black: Carpet Area', legendX, legendY - 20);
+            ctx.fillText('Green: Expected Area', legendX, legendY);
+            ctx.strokeStyle = '#000';
+            ctx.strokeRect(legendX - 10, legendY - 30, 100, 40);
+        }
+
+        function exportToPNG() {
+            const link = document.createElement('a');
+            link.download = 'canvas.png';
+            link.href = canvas.toDataURL();
+            link.click();
+        }
+
+        function exportToPDF() {
+            const { jsPDF } = window.jspdf;
+            html2canvas(canvas).then(canvas => {
+                const imgData = canvas.toDataURL('image/png');
+                const pdf = new jsPDF();
+                pdf.addImage(imgData, 'PNG', 10, 10);
+                pdf.save('canvas.pdf');
+            });
+        }
+
+        function drawGuidelines(startPoint, endPoint) {
+            ctx.strokeStyle = '#00ff00';
+            ctx.beginPath();
+            ctx.moveTo(startPoint.x, startPoint.y);
+            ctx.lineTo(endPoint.x, endPoint.y);
+            ctx.stroke();
+        }
+
+        drawGrid();
+    </script>
+</body>
+</html>
